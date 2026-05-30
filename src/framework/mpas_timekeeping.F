@@ -1567,12 +1567,42 @@ module mpas_timekeeping
             return
          end if
 
+#ifdef COUPLER
+         if (numerator /= 0) then
+            ! Fractional seconds present: pass Sn/Sd
+            call ESMF_TimeIntervalSet(interval % ti,                   &
+                 YY=year, MM=month, D=day, H=hour, M=min, S_i8=sec,   &
+                 Sn=numerator, Sd=denominator, rc=ierr)
+         else
+            ! No fractional seconds: omit Sn/Sd — passing Sn=0 makes
+            ! ESMF 8.9.1 normalize the fraction to sD=0 (invalid)
+            call ESMF_TimeIntervalSet(interval % ti,                   &
+                 YY=year, MM=month, D=day, H=hour, M=min, S_i8=sec,   &
+                 rc=ierr)
+         end if
+#else
          call ESMF_TimeIntervalSet(interval % ti, YY=year, MM=month, D=day, H=hour, M=min, S_i8=sec, Sn=numerator, Sd=denominator, rc=ierr)
+#endif
 
       else
 
+#ifdef COUPLER
+         if (present(S_n) .and. present(S_d) .and. S_d /= 0) then
+            ! Caller provides valid fractional seconds
+            call ESMF_TimeIntervalSet(interval % ti,                   &
+                 YY=YY, MM=MM, D=DD, H=H, M=M,                        &
+                 S_i8=S_i8, S=S, Sn=S_n, Sd=S_d, rc=ierr)
+         else
+            ! No fractional seconds: omit Sn/Sd entirely (same as
+            ! ESMF_TimeIntervalSet(ti, s=N) which is guaranteed safe)
+            call ESMF_TimeIntervalSet(interval % ti,                   &
+                 YY=YY, MM=MM, D=DD, H=H, M=M,                        &
+                 S_i8=S_i8, S=S, rc=ierr)
+         end if
+#else
          call ESMF_TimeIntervalSet(interval % ti, YY=YY, MM=MM, D=DD, H=H, M=M, S_i8=S_i8, S=S, Sn=S_n, Sd=S_d, rc=ierr)
-      
+#endif
+
       end if
 
 !     ! verify that time interval is positive
@@ -2322,5 +2352,96 @@ module mpas_timekeeping
 
     end subroutine mpas_expand_string!}}}
  
+
+#ifdef COUPLER
+   !-----------------------------------------------------------------------
+   !  routine mpas_advance_stop_time
+   !
+   !> \brief Avança o stop time do relógio MPAS por um número inteiro de segundos.
+   !>
+   !> \author GT Acoplamento MONAN — INPE/CGCT/DIMNT
+   !> \date   2026-04
+   !>
+   !> \details
+   !>   Destinada ao uso pelo cap NUOPC (mpas_atm_model_mod) para garantir
+   !>   que cada chamada a core_run avance exatamente um passo de acoplamento,
+   !>   e não toda a config_run_duration configurada no namelist.
+   !>
+   !>   Sequência interna:
+   !>     1. Obtém currTime via mpas_get_clock_time(clock, MPAS_NOW)
+   !>     2. Cria dtStep via mpas_set_timeinterval com S=dt_seconds
+   !>     3. newStopTime = currTime + dtStep  (operator(+) do módulo)
+   !>     4. Define novo stop time via mpas_set_clock_time(clock, newStopTime,
+   !>        MPAS_STOP_TIME, ierr)
+   !>
+   !>   Thread-safe: a chamada mpas_set_clock_time já contém barreira OpenMP.
+   !>
+   !> \param[inout] clock      Relógio MPAS-A a ser ajustado.
+   !> \param[in]    dt_seconds Passo de acoplamento em segundos inteiros.
+   !> \param[out]   ierr       Código de retorno (0 = sucesso).
+   !-----------------------------------------------------------------------
+   !  routine mpas_advance_stop_time
+   !
+   !> \brief Avança o stop time do relógio MPAS por um número inteiro de segundos.
+   !>
+   !> \author GT Acoplamento MONAN — INPE/CGCT/DIMNT
+   !> \date   2026-04
+   !>
+   !> \details
+   !>   Necessária mesmo com ESMF 8.9.1 puro: controla o relógio MPAS interno
+   !>   (g_domain%%clock), que é independente do relógio ESMF do driver.
+   !>   Sem esta chamada, core_run executa toda a run_duration na primeira chamada
+   !>   e retorna imediatamente nas chamadas seguintes (relógio já no stop_time).
+   !>
+   !> \param[inout] clock      Relógio MPAS-A a ser ajustado.
+   !> \param[in]    dt_seconds Passo de acoplamento em segundos inteiros.
+   !> \param[out]   ierr       Código de retorno (0 = sucesso).
+   !-----------------------------------------------------------------------
+   subroutine mpas_advance_stop_time(clock, dt_seconds, ierr)
+
+      implicit none
+
+      type (MPAS_Clock_type), intent(inout) :: clock
+      integer,                intent(in)    :: dt_seconds
+      integer,                intent(out), optional :: ierr
+
+      type (MPAS_Time_type)         :: currTime, newStopTime
+      type (MPAS_TimeInterval_type) :: dtStep
+      integer :: local_ierr
+
+      local_ierr = 0
+
+      ! 1. Tempo atual do relógio MPAS interno
+      currTime = mpas_get_clock_time(clock, MPAS_NOW, ierr=local_ierr)
+      if (local_ierr /= 0) then
+         call mpas_log_write('mpas_advance_stop_time: mpas_get_clock_time falhou', MPAS_LOG_ERR)
+         if (present(ierr)) ierr = local_ierr
+         return
+      end if
+
+      ! 2. Intervalo de acoplamento
+      call mpas_set_timeinterval(dtStep, S=dt_seconds, ierr=local_ierr)
+      if (local_ierr /= 0) then
+         call mpas_log_write('mpas_advance_stop_time: mpas_set_timeinterval falhou', MPAS_LOG_ERR)
+         if (present(ierr)) ierr = local_ierr
+         return
+      end if
+
+      ! 3. Novo stop = currTime + dtStep
+      newStopTime = currTime + dtStep
+
+      ! 4. Atualiza stop time no relógio MPAS interno (thread-safe)
+      call mpas_set_clock_time(clock, newStopTime, MPAS_STOP_TIME, ierr=local_ierr)
+      if (present(ierr)) then
+         if (local_ierr == ESMF_SUCCESS) then
+            ierr = 0
+         else
+            ierr = local_ierr
+         end if
+      end if
+
+   end subroutine mpas_advance_stop_time
+#endif
+
 
 end module mpas_timekeeping
