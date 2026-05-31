@@ -800,10 +800,9 @@ ifneq "$(PIO)" ""
 # Regardless of PIO library version, look for a lib subdirectory of PIO path
 # NB: PIO_LIB is used later, so we don't just set LIBS directly
 #
-#ifneq ($(wildcard $(PIO)/lib64), )
-#	PIO_LIB = $(PIO)/lib64
-#else
-ifneq ($(wildcard $(PIO)/lib), )
+ifneq ($(wildcard $(PIO)/lib64), )
+	PIO_LIB = $(PIO)/lib64
+else ifneq ($(wildcard $(PIO)/lib), )
 	PIO_LIB = $(PIO)/lib
 else
 	PIO_LIB = $(PIO)
@@ -891,7 +890,11 @@ else
 $(warning: ESMF_MOD not defined. Coupler compilation may fail.)
 endif
 ifneq "$(ESMF_LIBDIR)" ""
-    LIBS += -L$(ESMF_LIBDIR) -lesmf
+    LIBS += -L$(ESMF_LIBDIR) -lesmf \
+            -L$(PIO_LIB) -lpioc \
+	    -L$(NETCDF)/$(NETCDFLIBLOC) -lnetcdf -lnetcdff \
+            -lrt -lstdc++ -ldl
+
 endif
 ifneq "$(LAPACK)" ""
         LIBS += -L$(LAPACK)
