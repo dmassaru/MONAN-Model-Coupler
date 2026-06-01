@@ -2357,45 +2357,33 @@ module mpas_timekeeping
    !-----------------------------------------------------------------------
    !  routine mpas_advance_stop_time
    !
-   !> \brief Avança o stop time do relógio MPAS por um número inteiro de segundos.
+   !> \brief Advances the MPAS clock stop time by an integer number of seconds.
    !>
    !> \author GT Acoplamento MONAN — INPE/CGCT/DIMNT
    !> \date   2026-04
    !>
    !> \details
-   !>   Destinada ao uso pelo cap NUOPC (mpas_atm_model_mod) para garantir
-   !>   que cada chamada a core_run avance exatamente um passo de acoplamento,
-   !>   e não toda a config_run_duration configurada no namelist.
+   !>   Intended for use by the NUOPC cap (mpas_atm_model_mod) to ensure that
+   !>   each call to core_run advances exactly one coupling time step, rather
+   !>   than the entire config_run_duration set in the namelist.
    !>
-   !>   Sequência interna:
-   !>     1. Obtém currTime via mpas_get_clock_time(clock, MPAS_NOW)
-   !>     2. Cria dtStep via mpas_set_timeinterval com S=dt_seconds
-   !>     3. newStopTime = currTime + dtStep  (operator(+) do módulo)
-   !>     4. Define novo stop time via mpas_set_clock_time(clock, newStopTime,
+   !>   Required even with pure ESMF 8.9.1: it drives the internal MPAS clock
+   !>   (g_domain%%clock), which is independent of the driver's ESMF clock.
+   !>   Without this call, core_run runs the entire run_duration on the first call
+   !>   and returns immediately on subsequent calls (clock already at stop_time).
+   !>
+   !>   Internal sequence:
+   !>     1. Get currTime via mpas_get_clock_time(clock, MPAS_NOW)
+   !>     2. Build dtStep via mpas_set_timeinterval with S=dt_seconds
+   !>     3. newStopTime = currTime + dtStep  (module's operator(+))
+   !>     4. Set the new stop time via mpas_set_clock_time(clock, newStopTime,
    !>        MPAS_STOP_TIME, ierr)
    !>
-   !>   Thread-safe: a chamada mpas_set_clock_time já contém barreira OpenMP.
+   !>   Thread-safe: the mpas_set_clock_time call already contains an OpenMP barrier.
    !>
-   !> \param[inout] clock      Relógio MPAS-A a ser ajustado.
-   !> \param[in]    dt_seconds Passo de acoplamento em segundos inteiros.
-   !> \param[out]   ierr       Código de retorno (0 = sucesso).
-   !-----------------------------------------------------------------------
-   !  routine mpas_advance_stop_time
-   !
-   !> \brief Avança o stop time do relógio MPAS por um número inteiro de segundos.
-   !>
-   !> \author GT Acoplamento MONAN — INPE/CGCT/DIMNT
-   !> \date   2026-04
-   !>
-   !> \details
-   !>   Necessária mesmo com ESMF 8.9.1 puro: controla o relógio MPAS interno
-   !>   (g_domain%%clock), que é independente do relógio ESMF do driver.
-   !>   Sem esta chamada, core_run executa toda a run_duration na primeira chamada
-   !>   e retorna imediatamente nas chamadas seguintes (relógio já no stop_time).
-   !>
-   !> \param[inout] clock      Relógio MPAS-A a ser ajustado.
-   !> \param[in]    dt_seconds Passo de acoplamento em segundos inteiros.
-   !> \param[out]   ierr       Código de retorno (0 = sucesso).
+   !> \param[inout] clock      MPAS-A clock to be adjusted.
+   !> \param[in]    dt_seconds Coupling time step in integer seconds.
+   !> \param[out]   ierr       Return code (0 = success).
    !-----------------------------------------------------------------------
    subroutine mpas_advance_stop_time(clock, dt_seconds, ierr)
 
@@ -2411,26 +2399,26 @@ module mpas_timekeeping
 
       local_ierr = 0
 
-      ! 1. Tempo atual do relógio MPAS interno
+      ! 1. Current time of the internal MPAS clock
       currTime = mpas_get_clock_time(clock, MPAS_NOW, ierr=local_ierr)
       if (local_ierr /= 0) then
-         call mpas_log_write('mpas_advance_stop_time: mpas_get_clock_time falhou', MPAS_LOG_ERR)
+         call mpas_log_write('mpas_advance_stop_time: mpas_get_clock_time failed', MPAS_LOG_ERR)
          if (present(ierr)) ierr = local_ierr
          return
       end if
 
-      ! 2. Intervalo de acoplamento
+      ! 2. Coupling interval
       call mpas_set_timeinterval(dtStep, S=dt_seconds, ierr=local_ierr)
       if (local_ierr /= 0) then
-         call mpas_log_write('mpas_advance_stop_time: mpas_set_timeinterval falhou', MPAS_LOG_ERR)
+         call mpas_log_write('mpas_advance_stop_time: mpas_set_timeinterval failed', MPAS_LOG_ERR)
          if (present(ierr)) ierr = local_ierr
          return
       end if
 
-      ! 3. Novo stop = currTime + dtStep
+      ! 3. New stop = currTime + dtStep
       newStopTime = currTime + dtStep
 
-      ! 4. Atualiza stop time no relógio MPAS interno (thread-safe)
+      ! 4. Update stop time in the internal MPAS clock (thread-safe)
       call mpas_set_clock_time(clock, newStopTime, MPAS_STOP_TIME, ierr=local_ierr)
       if (present(ierr)) then
          if (local_ierr == ESMF_SUCCESS) then
